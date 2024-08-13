@@ -1,12 +1,17 @@
 import { NextResponse } from "next/server";
 
-import { getLowestPrice, getHighestPrice, getAveragePrice, getEmailNotifType } from "@/lib/utils";
+import {
+  getLowestPrice,
+  getHighestPrice,
+  getAveragePrice,
+  getEmailNotifType,
+} from "@/lib/utils";
 import { connectToDB } from "@/lib/mongoose";
 import Product from "@/lib/models/product.model";
 import { scrapeAmazonProduct } from "@/lib/scraper";
 import { generateEmailBody, sendEmail } from "@/lib/nodemailer";
 
-export const maxDuration = 300; // This function can run for a maximum of 300 seconds
+export const maxDuration = 60; // Set to 60 seconds to comply with Vercel's hobby plan
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
@@ -15,17 +20,18 @@ export async function GET(request: Request) {
     connectToDB();
 
     const products = await Product.find({});
-    if (!products) throw new Error("No product fetched");
+    if (!products) throw new Error("No products fetched");
 
     // Process products in chunks
-    const chunkSize = 10; // Adjust based on how many products can be processed in 60 seconds
+    const chunkSize = 10; // Adjust this number based on the time required per product
     for (let i = 0; i < products.length; i += chunkSize) {
       const productChunk = products.slice(i, i + chunkSize);
 
       await Promise.all(
         productChunk.map(async (currentProduct) => {
-          // Scrape and update logic
+          // Scrape product
           const scrapedProduct = await scrapeAmazonProduct(currentProduct.url);
+
           if (!scrapedProduct) return;
 
           const updatedPriceHistory = [
@@ -41,19 +47,36 @@ export async function GET(request: Request) {
             averagePrice: getAveragePrice(updatedPriceHistory),
           };
 
+          // Update Products in DB
           const updatedProduct = await Product.findOneAndUpdate(
             { url: product.url },
             product
           );
 
-          const emailNotifType = getEmailNotifType(scrapedProduct, currentProduct);
+          // Check each product's status and send email accordingly
+          const emailNotifType = getEmailNotifType(
+            scrapedProduct,
+            currentProduct
+          );
+
           if (emailNotifType && updatedProduct.users.length > 0) {
             const productInfo = {
               title: updatedProduct.title,
               url: updatedProduct.url,
             };
-            const emailContent = await generateEmailBody(productInfo, emailNotifType);
-            const userEmails = updatedProduct.users.map((user: any) => user.email);
+
+            // Construct email content
+            const emailContent = await generateEmailBody(
+              productInfo,
+              emailNotifType
+            );
+
+            // Get array of user emails
+            const userEmails = updatedProduct.users.map(
+              (user: any) => user.email
+            );
+
+            // Send email notification
             await sendEmail(emailContent, userEmails);
           }
 
@@ -70,4 +93,3 @@ export async function GET(request: Request) {
     throw new Error(`Failed to get all products: ${error.message}`);
   }
 }
-
